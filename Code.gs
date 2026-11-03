@@ -2,16 +2,19 @@ var FOLDER_ID = "1rQPbR3_Bb2ZdRh4rsTDlQHboqBWRUqIHTE2MjjCJCDFtS3XpXxW5QvAIJ5LSzX
 var SPREADSHEET_ID = "1MnCgjj6SRIufY-xm0ZJcGTblc1ygGvBMC7TizwRXXZQ";
 var SHEET_NAME = "Form responses 1";
 
-// Builds a self-referencing IMAGE formula for the Nth image (1-based) from column J of the given row.
-// The formula reads the comma-separated Drive URLs in column J, extracts the Nth URL's file ID,
-// and renders a thumbnail. If fewer than N images exist in column J, it returns "" automatically.
-// Because the formula always references its OWN ROW's column J, it is self-correcting —
-// even if Google Sheets ever copies it to another row, it will still show the correct images.
-function buildImageFormula(rowNumber, nthImage) {
-  var jRef = "J" + rowNumber;
-  return '=IFERROR(IMAGE("https://drive.google.com/thumbnail?id="'
-    + '&REGEXEXTRACT(TRIM(INDEX(SPLIT(' + jRef + ',","),1,' + nthImage + ')),"id=([A-Za-z0-9_\\-]+)")'
-    + '&"&sz=w1000",1),"")';
+// Builds ONE formula text that is identical for every row.
+// It uses INDEX($J:$J, ROW()) = "column J of whatever row this cell is in",
+// so it can never point at another row, even if Sheets copies/inherits it.
+function buildImageFormula(nthImage) {
+  var jCell = 'INDEX($J:$J,ROW())';
+  return '=IFERROR(IF(OR(' + jCell + '="",' + jCell + '="N/A"),"",'
+    + 'IMAGE("https://drive.google.com/thumbnail?id="'
+    + '&REGEXEXTRACT(TRIM(INDEX(SPLIT(' + jCell + ',","),1,' + nthImage + ')),"id=([A-Za-z0-9_\\-]+)")'
+    + '&"&sz=w1000",1)),"")';
+}
+
+function getImageFormulaRow() {
+  return [[1, 2, 3, 4, 5].map(buildImageFormula)];
 }
 
 function doPost(e) {
@@ -69,7 +72,7 @@ function doPost(e) {
     // 3. Locate sheet
     var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
     var sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
-    var targetRow = sheet.getLastRow() + 1; // Capture BEFORE writing
+    var targetRow = sheet.getLastRow() + 1;
 
     // 4. Calculate Sequential Ticket ID
     var submissionCount = 0;
@@ -95,7 +98,10 @@ function doPost(e) {
       console.warn("Header check: " + hdrErr);
     }
 
-    // 6a. Write plain-text columns A through J using setValues() — never inherits from rows above
+    // 6a. Clear image columns first so nothing inherited/copied can survive
+    sheet.getRange(targetRow, 11, 1, 5).clearContent();
+
+    // 6b. Write plain-text columns A through J
     sheet.getRange(targetRow, 1, 1, 10).setValues([[
       new Date(),                                 // A: Timestamp
       ticketId,                                   // B: Ticket ID
@@ -109,28 +115,11 @@ function doPost(e) {
       fileUrl                                     // J: Comma-separated Drive URLs
     ]]);
 
-    // 6b. Write self-referencing IMAGE formulas for Columns K through O (slots 1–5).
-    //
-    // KEY DESIGN: Each formula reads column J of its OWN ROW and extracts the Nth URL.
-    // This means:
-    //   - A row with 4 URLs in J shows 4 images (slots 5 returns "" automatically)
-    //   - A row with 2 URLs in J shows 2 images (slots 3-5 return "" automatically)
-    //   - Even if Google Sheets ever copies/inherits these formulas, they read the
-    //     correct row's column J, so ghost images are impossible.
-    var imageFormulas = [
-      buildImageFormula(targetRow, 1), // K: 1st image
-      buildImageFormula(targetRow, 2), // L: 2nd image
-      buildImageFormula(targetRow, 3), // M: 3rd image
-      buildImageFormula(targetRow, 4), // N: 4th image
-      buildImageFormula(targetRow, 5)  // O: 5th image
-    ];
-    sheet.getRange(targetRow, 11, 1, 5).setFormulas([imageFormulas]);
+    // 6c. Write the row-independent image formulas (K..O = slots 1..5)
+    sheet.getRange(targetRow, 11, 1, 5).setFormulas(getImageFormulaRow());
 
     SpreadsheetApp.flush();
-
-    // Set row height to 100 so thumbnails fit cleanly
     sheet.setRowHeight(targetRow, 100);
-
     SpreadsheetApp.flush();
 
     return ContentService.createTextOutput(JSON.stringify({
@@ -212,10 +201,8 @@ function fillTicketIdsForExistingRows() {
   Logger.log("Updated " + count + " existing rows with Ticket IDs in Column B.");
 }
 
-// STEP 3 HELPER: Rebuild all image preview formulas for every existing row.
-// Replaces hardcoded IMAGE formulas (which caused ghost images) with self-referencing
-// formulas that read column J of their own row — so they always show the correct images.
-// Also sets all row heights to 100.
+// STEP 3 HELPER (RUN THIS ONCE): Rewrites K:O for every existing row with the
+// row-independent formula, which removes all ghost images currently in the sheet.
 function rebuildAllImageFormulas() {
   var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
   var sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
@@ -226,24 +213,23 @@ function rebuildAllImageFormulas() {
     return;
   }
 
-  for (var r = 2; r <= lastRow; r++) {
-    var imageFormulas = [
-      buildImageFormula(r, 1),
-      buildImageFormula(r, 2),
-      buildImageFormula(r, 3),
-      buildImageFormula(r, 4),
-      buildImageFormula(r, 5)
-    ];
-    sheet.getRange(r, 11, 1, 5).setFormulas([imageFormulas]);
-    sheet.setRowHeight(r, 100);
+  var numRows = lastRow - 1;
+  var rowFormulas = getImageFormulaRow()[0];
+  var allFormulas = [];
+  for (var r = 0; r < numRows; r++) {
+    allFormulas.push(rowFormulas.slice());
   }
 
+  var range = sheet.getRange(2, 11, numRows, 5);
+  range.clearContent();
+  range.setFormulas(allFormulas);
+  sheet.setRowHeights(2, numRows, 100);
+
   SpreadsheetApp.flush();
-  Logger.log("Rebuilt self-referencing image formulas for " + (lastRow - 1) + " rows. All heights set to 100.");
+  Logger.log("Rebuilt image formulas for " + numRows + " rows.");
 }
 
 // AUTOMATED TRIGGER HANDLER: Called by the 'On change' trigger.
-// Fixes failure email: "Script function not found: autoResizeNewRows"
 function autoResizeNewRows(e) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
