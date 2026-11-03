@@ -1,20 +1,23 @@
-const FOLDER_ID = "1rQPbR3_Bb2ZdRh4rsTDlQHboqBWRUqIHTE2MjjCJCDFtS3XpXxW5QvAIJ5LSzXT-co-8RTyt";
-const SPREADSHEET_ID = "1MnCgjj6SRIufY-xm0ZJcGTblc1ygGvBMC7TizwRXXZQ";
-const SHEET_NAME = "Form responses 1";
+var FOLDER_ID = "1rQPbR3_Bb2ZdRh4rsTDlQHboqBWRUqIHTE2MjjCJCDFtS3XpXxW5QvAIJ5LSzXT-co-8RTyt";
+var SPREADSHEET_ID = "1MnCgjj6SRIufY-xm0ZJcGTblc1ygGvBMC7TizwRXXZQ";
+var SHEET_NAME = "Form responses 1";
 
 function doPost(e) {
-  const lock = LockService.getScriptLock();
+  var lock = LockService.getScriptLock();
   lock.tryLock(10000); // Prevent race conditions on concurrent row appends
 
   try {
-    const data = JSON.parse(e.postData.contents);
-    const uploadedUrls = [];
-    const uploadedIds = [];
+    var data = JSON.parse(e.postData.contents);
+    var uploadedUrls = [];
+    var uploadedIds = [];
 
     // 1. Collect files to process (supports up to 5 screenshots)
-    const filesToProcess = [];
+    var filesToProcess = [];
     if (Array.isArray(data.files) && data.files.length > 0) {
-      filesToProcess.push(...data.files.slice(0, 5)); // Maximum 5 screenshots
+      var sliced = data.files.slice(0, 5);
+      for (var f = 0; f < sliced.length; f++) {
+        filesToProcess.push(sliced[f]);
+      }
     } else if (data.fileData && data.fileName) {
       // Fallback for single-file payloads
       filesToProcess.push({
@@ -27,14 +30,14 @@ function doPost(e) {
     // 2. Process and save each screenshot to Google Drive
     if (filesToProcess.length > 0) {
       try {
-        const folder = DriveApp.getFolderById(FOLDER_ID);
-        for (let i = 0; i < filesToProcess.length; i++) {
-          const item = filesToProcess[i];
+        var folder = DriveApp.getFolderById(FOLDER_ID);
+        for (var i = 0; i < filesToProcess.length; i++) {
+          var item = filesToProcess[i];
           if (!item.fileData) continue;
           try {
-            const decodedBytes = Utilities.base64Decode(item.fileData);
-            const blob = Utilities.newBlob(decodedBytes, item.mimeType || "image/png", item.fileName || ("screenshot_" + (i + 1) + ".png"));
-            const file = folder.createFile(blob);
+            var decodedBytes = Utilities.base64Decode(item.fileData);
+            var blob = Utilities.newBlob(decodedBytes, item.mimeType || "image/png", item.fileName || ("screenshot_" + (i + 1) + ".png"));
+            var file = folder.createFile(blob);
 
             // Make file accessible with link
             try {
@@ -43,7 +46,6 @@ function doPost(e) {
               console.warn("Share warning: " + shareErr);
             }
 
-            // Match Google Form URL format exactly: https://drive.google.com/open?id=...
             uploadedUrls.push("https://drive.google.com/open?id=" + file.getId());
             uploadedIds.push(file.getId());
           } catch (fileErr) {
@@ -55,42 +57,29 @@ function doPost(e) {
       }
     }
 
-    const fileUrl = uploadedUrls.length > 0 ? uploadedUrls.join(", ") : "N/A";
+    var fileUrl = uploadedUrls.length > 0 ? uploadedUrls.join(", ") : "N/A";
 
     // 3. Locate sheet (works for both container-bound and standalone scripts)
-    const ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
-    const sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
-    const nextRow = sheet.getLastRow() + 1;
+    var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
+    var sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
+    var targetRow = sheet.getLastRow() + 1; // Capture BEFORE writing
 
-    // 4. Calculate Sequential Ticket ID (Starting from 1 based on actual submissions)
-    let submissionCount = 0;
-    const lastRow = sheet.getLastRow();
+    // 4. Calculate Sequential Ticket ID
+    var submissionCount = 0;
+    var lastRow = sheet.getLastRow();
     if (lastRow >= 2) {
-      const colAValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-      for (let i = 0; i < colAValues.length; i++) {
-        const val = colAValues[i][0];
+      var colAValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+      for (var j = 0; j < colAValues.length; j++) {
+        var val = colAValues[j][0];
         if (val !== "" && val !== null && val !== undefined) {
           submissionCount++;
         }
       }
     }
-    const ticketSeq = submissionCount + 1;
-    const ticketId = "#DUT-" + ticketSeq;
+    var ticketSeq = submissionCount + 1;
+    var ticketId = "#DUT-" + ticketSeq;
 
-    // 5. Prepare preview formulas for up to 5 screenshots (Columns K, L, M, N, O)
-    // IMPORTANT: We explicitly populate all 5 slots (using "" for unused slots) so Google Sheets
-    // will NEVER auto-fill or inherit formulas from the row above!
-    const MAX_SCREENSHOT_SLOTS = 5;
-    const previewSlots = [];
-    for (let i = 0; i < MAX_SCREENSHOT_SLOTS; i++) {
-      if (i < uploadedIds.length) {
-        previewSlots.push(`=IFERROR(IMAGE("https://drive.google.com/thumbnail?id=${uploadedIds[i]}&sz=w1000", 1), "")`);
-      } else {
-        previewSlots.push(""); // Explicit blank prevents Sheets formula autofill carryover
-      }
-    }
-
-    // Ensure header in Column B if not present
+    // 5. Ensure header in Column B if not present
     try {
       if (sheet.getRange(1, 2).getValue() === "") {
         sheet.getRange(1, 2).setValue("Ticket ID");
@@ -99,10 +88,13 @@ function doPost(e) {
       console.warn("Header check: " + hdrErr);
     }
 
-    // 6. Append row: Column A (Timestamp), Column B (Ticket ID), followed by C through J and image previews (K through O)
-    sheet.appendRow([
+    // 6. Write the new row using setValues() + setFormula() instead of appendRow().
+    // appendRow() silently copies formulas from the row above — setValues() never does.
+
+    // 6a. Write all plain-text columns (A through J) in one batch call
+    sheet.getRange(targetRow, 1, 1, 10).setValues([[
       new Date(),                                 // A: Timestamp
-      ticketId,                                   // B: Ticket ID (just after timestamp!)
+      ticketId,                                   // B: Ticket ID
       data.consultantName || "",                  // C: Consultant Name
       data.projectName || data.companyName || "", // D: Project Name
       data.requestType || "",                     // E: Request Type
@@ -110,24 +102,27 @@ function doPost(e) {
       data.title || "",                           // G: Request Title
       data.category || "",                        // H: Category / Module
       data.description || "",                     // I: Description
-      fileUrl,                                    // J: Upload a Screenshot (comma-separated URLs)
-      ...previewSlots                             // K, L, M, N, O: Previews for all screenshot slots
-    ]);
+      fileUrl                                     // J: Screenshot URLs
+    ]]);
+
+    // 6b. Write IMAGE formula for each uploaded image, one cell at a time
+    for (var k = 0; k < uploadedIds.length; k++) {
+      var imageFormula = '=IFERROR(IMAGE("https://drive.google.com/thumbnail?id=' + uploadedIds[k] + '&sz=w1000", 1), "")';
+      sheet.getRange(targetRow, 11 + k).setFormula(imageFormula);
+    }
+
+    // 6c. Explicitly blank out all unused image slots through column O (col 15)
+    //     This prevents ghost formulas from lingering from any prior row
+    var clearStart = 11 + uploadedIds.length;
+    var clearEnd = 15; // Column O
+    if (clearEnd >= clearStart) {
+      sheet.getRange(targetRow, clearStart, 1, clearEnd - clearStart + 1).clearContent();
+    }
 
     SpreadsheetApp.flush();
 
-    // Exact row that was just appended
-    const appendedRow = sheet.getLastRow();
-
     // Set row height to 100 so thumbnails and text fit cleanly
-    sheet.setRowHeight(appendedRow, 100);
-
-    // Extra safety guarantee: Clear any ghost formulas in columns beyond the uploaded images for this row
-    const totalCols = Math.max(sheet.getLastColumn(), 15);
-    const firstUnusedCol = 11 + uploadedIds.length; // Col K is column 11
-    if (totalCols >= firstUnusedCol) {
-      sheet.getRange(appendedRow, firstUnusedCol, 1, totalCols - firstUnusedCol + 1).clearContent();
-    }
+    sheet.setRowHeight(targetRow, 100);
 
     SpreadsheetApp.flush();
 
@@ -155,20 +150,20 @@ function doPost(e) {
 // GET endpoint: Lets the website fetch the live total count of requests directly from Google Sheets!
 function doGet(e) {
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
-    const sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
-    let totalCount = 0;
-    const lastRow = sheet.getLastRow();
+    var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
+    var sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
+    var totalCount = 0;
+    var lastRow = sheet.getLastRow();
     if (lastRow >= 2) {
-      const colAValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-      for (let i = 0; i < colAValues.length; i++) {
-        const val = colAValues[i][0];
+      var colAValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+      for (var i = 0; i < colAValues.length; i++) {
+        var val = colAValues[i][0];
         if (val !== "" && val !== null && val !== undefined) {
           totalCount++;
         }
       }
     }
-    
+
     return ContentService.createTextOutput(JSON.stringify({
       status: "success",
       totalRequests: totalCount,
@@ -182,31 +177,30 @@ function doGet(e) {
   }
 }
 
-// STEP 1 HELPER: Run this function in the Apps Script editor to authorize Google Drive & test folder permissions
+// STEP 1 HELPER: Test Drive folder access
 function testDriveAccess() {
-  const folder = DriveApp.getFolderById(FOLDER_ID);
-  const file = folder.createFile("test_permission.txt", "Drive access verified!");
+  var folder = DriveApp.getFolderById(FOLDER_ID);
+  var file = folder.createFile("test_permission.txt", "Drive access verified!");
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
   Logger.log("SUCCESS! Created file: " + file.getUrl());
 }
 
-// STEP 2 HELPER: Run this function once in Apps Script to automatically fill Column B with #DUT-1, #DUT-2... for all existing rows in your sheet!
+// STEP 2 HELPER: Fill Column B with #DUT-1, #DUT-2... for all existing rows
 function fillTicketIdsForExistingRows() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
-  const lastRow = sheet.getLastRow();
-  
-  // Set Column B header
+  var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
+  var lastRow = sheet.getLastRow();
+
   sheet.getRange(1, 2).setValue("Ticket ID");
-  
+
   if (lastRow < 2) {
     Logger.log("No data rows found.");
     return;
   }
-  
-  let count = 0;
-  for (let r = 2; r <= lastRow; r++) {
-    const current = sheet.getRange(r, 2).getValue();
+
+  var count = 0;
+  for (var r = 2; r <= lastRow; r++) {
+    var current = sheet.getRange(r, 2).getValue();
     if (!current || String(current).trim() === "") {
       sheet.getRange(r, 2).setValue("#DUT-" + (r - 1));
       count++;
@@ -215,49 +209,51 @@ function fillTicketIdsForExistingRows() {
   Logger.log("Updated " + count + " existing rows with Ticket IDs in Column B.");
 }
 
-// STEP 3 HELPER: Run this function once in Apps Script to clean up any "ghost" images from existing rows and enforce height 100
+// STEP 3 HELPER: Clean up ghost images from existing rows and set all row heights to 100
 function cleanupGhostImages() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
-  const lastRow = sheet.getLastRow();
-  const lastCol = sheet.getLastColumn();
+  var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
+  var sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
+  var lastRow = sheet.getLastRow();
+  var lastCol = Math.max(sheet.getLastColumn(), 15);
 
-  if (lastRow < 2 || lastCol < 11) {
-    Logger.log("No data or preview columns to clean.");
+  if (lastRow < 2) {
+    Logger.log("No data rows found.");
     return;
   }
 
-  let cleanedRows = 0;
-  for (let r = 2; r <= lastRow; r++) {
-    // Column J (index 10) contains comma-separated URLs or "N/A"
-    const fileUrlCell = String(sheet.getRange(r, 10).getValue() || "").trim();
-    let expectedImageCount = 0;
+  var cleanedRows = 0;
+  for (var r = 2; r <= lastRow; r++) {
+    // Column J (col 10) has comma-separated URLs
+    var fileUrlCell = String(sheet.getRange(r, 10).getValue() || "").trim();
+    var expectedImageCount = 0;
     if (fileUrlCell && fileUrlCell !== "N/A") {
-      expectedImageCount = fileUrlCell.split(",").filter(url => url.trim().length > 0).length;
+      var urls = fileUrlCell.split(",");
+      for (var u = 0; u < urls.length; u++) {
+        if (urls[u].trim().length > 0) expectedImageCount++;
+      }
     }
 
-    const firstUnusedCol = 11 + expectedImageCount; // Column K is 11
-    const maxColToClear = Math.max(lastCol, 15);
-    if (maxColToClear >= firstUnusedCol) {
-      const numColsToClear = maxColToClear - firstUnusedCol + 1;
-      const rangeToClear = sheet.getRange(r, firstUnusedCol, 1, numColsToClear);
-      rangeToClear.clearContent();
+    // Clear all columns from first unused image slot through column O
+    var firstUnusedCol = 11 + expectedImageCount;
+    if (lastCol >= firstUnusedCol) {
+      sheet.getRange(r, firstUnusedCol, 1, lastCol - firstUnusedCol + 1).clearContent();
       cleanedRows++;
     }
-    // Set row height to 100 for all existing rows
+
+    // Reset row height to 100
     sheet.setRowHeight(r, 100);
   }
   SpreadsheetApp.flush();
-  Logger.log("Cleaned ghost images from " + cleanedRows + " rows and ensured row height is 100 for all rows.");
+  Logger.log("Cleaned ghost images from " + cleanedRows + " rows. All row heights set to 100.");
 }
 
-// AUTOMATED TRIGGER HANDLER: Matches the 'On change' trigger in your Apps Script project
-// Resolves the email error ("Script function not found: autoResizeNewRows") and ensures height 100
+// AUTOMATED TRIGGER HANDLER: Called by the 'On change' trigger.
+// Fixes the failure email: "Script function not found: autoResizeNewRows"
 function autoResizeNewRows(e) {
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
-    const sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
-    const lastRow = sheet.getLastRow();
+    var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
+    var sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
+    var lastRow = sheet.getLastRow();
     if (lastRow >= 2) {
       sheet.setRowHeight(lastRow, 100);
     }
@@ -265,5 +261,3 @@ function autoResizeNewRows(e) {
     console.error("autoResizeNewRows error: " + err);
   }
 }
-
-
