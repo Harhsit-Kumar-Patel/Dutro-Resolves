@@ -2,14 +2,25 @@ var FOLDER_ID = "1rQPbR3_Bb2ZdRh4rsTDlQHboqBWRUqIHTE2MjjCJCDFtS3XpXxW5QvAIJ5LSzX
 var SPREADSHEET_ID = "1MnCgjj6SRIufY-xm0ZJcGTblc1ygGvBMC7TizwRXXZQ";
 var SHEET_NAME = "Form responses 1";
 
+// Builds a self-referencing IMAGE formula for the Nth image (1-based) from column J of the given row.
+// The formula reads the comma-separated Drive URLs in column J, extracts the Nth URL's file ID,
+// and renders a thumbnail. If fewer than N images exist in column J, it returns "" automatically.
+// Because the formula always references its OWN ROW's column J, it is self-correcting —
+// even if Google Sheets ever copies it to another row, it will still show the correct images.
+function buildImageFormula(rowNumber, nthImage) {
+  var jRef = "J" + rowNumber;
+  return '=IFERROR(IMAGE("https://drive.google.com/thumbnail?id="'
+    + '&REGEXEXTRACT(TRIM(INDEX(SPLIT(' + jRef + ',","),1,' + nthImage + ')),"id=([A-Za-z0-9_\\-]+)")'
+    + '&"&sz=w1000",1),"")';
+}
+
 function doPost(e) {
   var lock = LockService.getScriptLock();
-  lock.tryLock(10000); // Prevent race conditions on concurrent row appends
+  lock.tryLock(10000);
 
   try {
     var data = JSON.parse(e.postData.contents);
     var uploadedUrls = [];
-    var uploadedIds = [];
 
     // 1. Collect files to process (supports up to 5 screenshots)
     var filesToProcess = [];
@@ -19,7 +30,6 @@ function doPost(e) {
         filesToProcess.push(sliced[f]);
       }
     } else if (data.fileData && data.fileName) {
-      // Fallback for single-file payloads
       filesToProcess.push({
         fileData: data.fileData,
         fileName: data.fileName,
@@ -27,7 +37,7 @@ function doPost(e) {
       });
     }
 
-    // 2. Process and save each screenshot to Google Drive
+    // 2. Upload each screenshot to Google Drive
     if (filesToProcess.length > 0) {
       try {
         var folder = DriveApp.getFolderById(FOLDER_ID);
@@ -38,16 +48,12 @@ function doPost(e) {
             var decodedBytes = Utilities.base64Decode(item.fileData);
             var blob = Utilities.newBlob(decodedBytes, item.mimeType || "image/png", item.fileName || ("screenshot_" + (i + 1) + ".png"));
             var file = folder.createFile(blob);
-
-            // Make file accessible with link
             try {
               file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
             } catch (shareErr) {
               console.warn("Share warning: " + shareErr);
             }
-
             uploadedUrls.push("https://drive.google.com/open?id=" + file.getId());
-            uploadedIds.push(file.getId());
           } catch (fileErr) {
             console.error("Error creating file " + (i + 1) + ": " + fileErr);
           }
@@ -57,9 +63,10 @@ function doPost(e) {
       }
     }
 
+    // Column J: comma-separated Drive URLs (or "N/A" if none)
     var fileUrl = uploadedUrls.length > 0 ? uploadedUrls.join(", ") : "N/A";
 
-    // 3. Locate sheet (works for both container-bound and standalone scripts)
+    // 3. Locate sheet
     var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
     var sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
     var targetRow = sheet.getLastRow() + 1; // Capture BEFORE writing
@@ -79,7 +86,7 @@ function doPost(e) {
     var ticketSeq = submissionCount + 1;
     var ticketId = "#DUT-" + ticketSeq;
 
-    // 5. Ensure header in Column B if not present
+    // 5. Ensure header in Column B
     try {
       if (sheet.getRange(1, 2).getValue() === "") {
         sheet.getRange(1, 2).setValue("Ticket ID");
@@ -88,10 +95,7 @@ function doPost(e) {
       console.warn("Header check: " + hdrErr);
     }
 
-    // 6. Write the new row using setValues() + setFormula() instead of appendRow().
-    // appendRow() silently copies formulas from the row above — setValues() never does.
-
-    // 6a. Write all plain-text columns (A through J) in one batch call
+    // 6a. Write plain-text columns A through J using setValues() — never inherits from rows above
     sheet.getRange(targetRow, 1, 1, 10).setValues([[
       new Date(),                                 // A: Timestamp
       ticketId,                                   // B: Ticket ID
@@ -102,26 +106,29 @@ function doPost(e) {
       data.title || "",                           // G: Request Title
       data.category || "",                        // H: Category / Module
       data.description || "",                     // I: Description
-      fileUrl                                     // J: Screenshot URLs
+      fileUrl                                     // J: Comma-separated Drive URLs
     ]]);
 
-    // 6b. Write IMAGE formula for each uploaded image, one cell at a time
-    for (var k = 0; k < uploadedIds.length; k++) {
-      var imageFormula = '=IFERROR(IMAGE("https://drive.google.com/thumbnail?id=' + uploadedIds[k] + '&sz=w1000", 1), "")';
-      sheet.getRange(targetRow, 11 + k).setFormula(imageFormula);
-    }
-
-    // 6c. Explicitly blank out all unused image slots through column O (col 15)
-    //     This prevents ghost formulas from lingering from any prior row
-    var clearStart = 11 + uploadedIds.length;
-    var clearEnd = 15; // Column O
-    if (clearEnd >= clearStart) {
-      sheet.getRange(targetRow, clearStart, 1, clearEnd - clearStart + 1).clearContent();
-    }
+    // 6b. Write self-referencing IMAGE formulas for Columns K through O (slots 1–5).
+    //
+    // KEY DESIGN: Each formula reads column J of its OWN ROW and extracts the Nth URL.
+    // This means:
+    //   - A row with 4 URLs in J shows 4 images (slots 5 returns "" automatically)
+    //   - A row with 2 URLs in J shows 2 images (slots 3-5 return "" automatically)
+    //   - Even if Google Sheets ever copies/inherits these formulas, they read the
+    //     correct row's column J, so ghost images are impossible.
+    var imageFormulas = [
+      buildImageFormula(targetRow, 1), // K: 1st image
+      buildImageFormula(targetRow, 2), // L: 2nd image
+      buildImageFormula(targetRow, 3), // M: 3rd image
+      buildImageFormula(targetRow, 4), // N: 4th image
+      buildImageFormula(targetRow, 5)  // O: 5th image
+    ];
+    sheet.getRange(targetRow, 11, 1, 5).setFormulas([imageFormulas]);
 
     SpreadsheetApp.flush();
 
-    // Set row height to 100 so thumbnails and text fit cleanly
+    // Set row height to 100 so thumbnails fit cleanly
     sheet.setRowHeight(targetRow, 100);
 
     SpreadsheetApp.flush();
@@ -147,7 +154,7 @@ function doPost(e) {
   }
 }
 
-// GET endpoint: Lets the website fetch the live total count of requests directly from Google Sheets!
+// GET endpoint: Returns live total count of requests
 function doGet(e) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -163,7 +170,6 @@ function doGet(e) {
         }
       }
     }
-
     return ContentService.createTextOutput(JSON.stringify({
       status: "success",
       totalRequests: totalCount,
@@ -190,14 +196,11 @@ function fillTicketIdsForExistingRows() {
   var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
   var sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
   var lastRow = sheet.getLastRow();
-
   sheet.getRange(1, 2).setValue("Ticket ID");
-
   if (lastRow < 2) {
     Logger.log("No data rows found.");
     return;
   }
-
   var count = 0;
   for (var r = 2; r <= lastRow; r++) {
     var current = sheet.getRange(r, 2).getValue();
@@ -209,46 +212,38 @@ function fillTicketIdsForExistingRows() {
   Logger.log("Updated " + count + " existing rows with Ticket IDs in Column B.");
 }
 
-// STEP 3 HELPER: Clean up ghost images from existing rows and set all row heights to 100
-function cleanupGhostImages() {
+// STEP 3 HELPER: Rebuild all image preview formulas for every existing row.
+// Replaces hardcoded IMAGE formulas (which caused ghost images) with self-referencing
+// formulas that read column J of their own row — so they always show the correct images.
+// Also sets all row heights to 100.
+function rebuildAllImageFormulas() {
   var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
   var sheet = ss.getSheetByName(SHEET_NAME) || ss.getSheets()[0];
   var lastRow = sheet.getLastRow();
-  var lastCol = Math.max(sheet.getLastColumn(), 15);
 
   if (lastRow < 2) {
     Logger.log("No data rows found.");
     return;
   }
 
-  var cleanedRows = 0;
   for (var r = 2; r <= lastRow; r++) {
-    // Column J (col 10) has comma-separated URLs
-    var fileUrlCell = String(sheet.getRange(r, 10).getValue() || "").trim();
-    var expectedImageCount = 0;
-    if (fileUrlCell && fileUrlCell !== "N/A") {
-      var urls = fileUrlCell.split(",");
-      for (var u = 0; u < urls.length; u++) {
-        if (urls[u].trim().length > 0) expectedImageCount++;
-      }
-    }
-
-    // Clear all columns from first unused image slot through column O
-    var firstUnusedCol = 11 + expectedImageCount;
-    if (lastCol >= firstUnusedCol) {
-      sheet.getRange(r, firstUnusedCol, 1, lastCol - firstUnusedCol + 1).clearContent();
-      cleanedRows++;
-    }
-
-    // Reset row height to 100
+    var imageFormulas = [
+      buildImageFormula(r, 1),
+      buildImageFormula(r, 2),
+      buildImageFormula(r, 3),
+      buildImageFormula(r, 4),
+      buildImageFormula(r, 5)
+    ];
+    sheet.getRange(r, 11, 1, 5).setFormulas([imageFormulas]);
     sheet.setRowHeight(r, 100);
   }
+
   SpreadsheetApp.flush();
-  Logger.log("Cleaned ghost images from " + cleanedRows + " rows. All row heights set to 100.");
+  Logger.log("Rebuilt self-referencing image formulas for " + (lastRow - 1) + " rows. All heights set to 100.");
 }
 
 // AUTOMATED TRIGGER HANDLER: Called by the 'On change' trigger.
-// Fixes the failure email: "Script function not found: autoResizeNewRows"
+// Fixes failure email: "Script function not found: autoResizeNewRows"
 function autoResizeNewRows(e) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(SPREADSHEET_ID);
