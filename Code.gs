@@ -114,6 +114,8 @@ function doPost(e) {
       ...previewSlots                             // K, L, M, N, O: Previews for all screenshot slots
     ]);
 
+    SpreadsheetApp.flush();
+
     // Exact row that was just appended
     const appendedRow = sheet.getLastRow();
 
@@ -121,11 +123,13 @@ function doPost(e) {
     sheet.setRowHeight(appendedRow, 100);
 
     // Extra safety guarantee: Clear any ghost formulas in columns beyond the uploaded images for this row
-    const totalCols = sheet.getLastColumn();
+    const totalCols = Math.max(sheet.getLastColumn(), 15);
     const firstUnusedCol = 11 + uploadedIds.length; // Col K is column 11
     if (totalCols >= firstUnusedCol) {
       sheet.getRange(appendedRow, firstUnusedCol, 1, totalCols - firstUnusedCol + 1).clearContent();
     }
+
+    SpreadsheetApp.flush();
 
     return ContentService.createTextOutput(JSON.stringify({
       status: "success",
@@ -233,19 +237,17 @@ function cleanupGhostImages() {
     }
 
     const firstUnusedCol = 11 + expectedImageCount; // Column K is 11
-    if (lastCol >= firstUnusedCol) {
-      const numColsToClear = lastCol - firstUnusedCol + 1;
+    const maxColToClear = Math.max(lastCol, 15);
+    if (maxColToClear >= firstUnusedCol) {
+      const numColsToClear = maxColToClear - firstUnusedCol + 1;
       const rangeToClear = sheet.getRange(r, firstUnusedCol, 1, numColsToClear);
-      const values = rangeToClear.getValues()[0];
-      const hasContent = values.some(v => v !== "" && v !== null && v !== undefined);
-      if (hasContent) {
-        rangeToClear.clearContent();
-        cleanedRows++;
-      }
+      rangeToClear.clearContent();
+      cleanedRows++;
     }
     // Set row height to 100 for all existing rows
     sheet.setRowHeight(r, 100);
   }
+  SpreadsheetApp.flush();
   Logger.log("Cleaned ghost images from " + cleanedRows + " rows and ensured row height is 100 for all rows.");
 }
 
